@@ -1,0 +1,113 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 75bc6f0..b0d2d73 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -13,7 +13,10 @@ default = [
+     "dataflow",
+     "evm",
+     "print_txn_corpus",
+-    "full_trace"
++    "full_trace",
++    "debug",
++    "deployer_is_attacker",
++    "print_pc_on_replay"
+ ]
+ evm = []
+ cmp = []
+@@ -44,6 +47,7 @@ sui_support = [
+ ]
+ debug = []
+ flashloan_debug = []
++print_pc_on_replay = []
+ 
+ [dependencies]
+ bytes = { version = "1.2.1", features = ["serde"] }
+diff --git a/src/evm/contract_utils.rs b/src/evm/contract_utils.rs
+index f2c8bd1..b23a401 100644
+--- a/src/evm/contract_utils.rs
++++ b/src/evm/contract_utils.rs
+@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
+ use super::types::ProjectSourceMapTy;
+ 
+ // to use this address, call rand_utils::fixed_address(FIX_DEPLOYER)
+-pub static FIX_DEPLOYER: &str = "8b21e662154b4bbc1ec0754d0238875fe3d22fa6";
++pub static FIX_DEPLOYER: &str = "24cd2edba056b7c654a50e8201b619d4f624fdda";
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+ pub struct ABIConfig {
+diff --git a/src/evm/input.rs b/src/evm/input.rs
+index 2b2b0ce..3d7eb14 100644
+--- a/src/evm/input.rs
++++ b/src/evm/input.rs
+@@ -291,6 +291,7 @@ impl ConciseEVMInput {
+ 
+     #[cfg(not(feature = "flashloan_v2"))]
+     fn pretty_txn(&self) -> Option<String> {
++        #[cfg(not(feature = "debug"))]
+         match self.data {
+             Some(ref d) => Some(format!(
+                 "{:?} => {:?} {} with {} ETH ({})",
+@@ -307,6 +308,15 @@ impl ConciseEVMInput {
+                 self.txn_value.unwrap_or(EVMU256::ZERO),
+             )),
+         }
++
++        #[cfg(feature = "debug")]
++        Some(format!(
++            "{:?} => {:?} with {:?} ETH, {}",
++            self.caller,
++            self.contract,
++            self.txn_value,
++            hex::encode(self.direct_data.clone())
++        ))
+     }
+ }
+ 
+diff --git a/src/evm/middlewares/coverage.rs b/src/evm/middlewares/coverage.rs
+index b5586fa..40b6b8c 100644
+--- a/src/evm/middlewares/coverage.rs
++++ b/src/evm/middlewares/coverage.rs
+@@ -173,10 +173,12 @@ impl CoverageReport {
+         println!("============= Coverage Summary =============");
+         for (addr, cov) in &self.coverage {
+             println!(
+-                "{}: {:.2}% Instruction Covered, {:.2}% Branch Covered",
++                "{}: {:.2}% ({}) Instruction Covered, {:.2}% ({}) Branch Covered",
+                 addr,
+                 (cov.instruction_coverage * 100) as f64 / cov.total_instructions as f64,
+-                (cov.branch_coverage * 100) as f64 / cov.total_branches as f64
++                cov.instruction_coverage,
++                (cov.branch_coverage * 100) as f64 / cov.total_branches as f64,
++                cov.branch_coverage
+             );
+         }
+     }
+diff --git a/src/evm/vm.rs b/src/evm/vm.rs
+index f9b153f..80907f2 100644
+--- a/src/evm/vm.rs
++++ b/src/evm/vm.rs
+@@ -61,7 +61,7 @@ use crate::state::{HasCaller, HasCurrentInputIdx, HasItyState};
+ use serde::de::DeserializeOwned;
+ use serde::{Deserialize, Serialize};
+ 
+-pub const MEM_LIMIT: u64 = 10 * 1024;
++pub const MEM_LIMIT: u64 = 256 * 1024; // 256 KB
+ const MAX_POST_EXECUTION: usize = 10;
+ 
+ /// Get the token context from the flashloan middleware,
+diff --git a/src/fuzzers/evm_fuzzer.rs b/src/fuzzers/evm_fuzzer.rs
+index 26df884..90b07df 100644
+--- a/src/fuzzers/evm_fuzzer.rs
++++ b/src/fuzzers/evm_fuzzer.rs
+@@ -507,6 +507,10 @@ pub fn evm_fuzzer(
+ 
+             // dump coverage:
+             cov_middleware.borrow_mut().record_instruction_coverage();
++
++            #[cfg(feature = "print_pc_on_replay")]
++            println!("{}", serde_json::to_string(&cov_middleware.borrow_mut().pc_coverage).unwrap());
++
+         }
+     }
+ }
+ 
